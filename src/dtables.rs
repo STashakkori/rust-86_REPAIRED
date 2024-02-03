@@ -1,0 +1,162 @@
+use core::arch::asm;
+
+use crate::segmentation::SegmentSelector;
+use core::fmt;
+use core::mem::size_of;
+
+/// A struct describing a pointer to a descriptor table (GDT / IDT).
+/// This is in a format suitable for giving to 'lgdt' or 'lidt'.
+#[repr(C, packed)]
+pub struct DescriptorTablePointer<Entry> {
+    /// Size of the DT.
+    pub limit: u16,
+    /// Pointer to the memory region containing the DT.
+    pub base: *const Entry,
+}
+
+impl<T> Default for DescriptorTablePointer<T> {
+    fn default() -> DescriptorTablePointer<T> {
+        DescriptorTablePointer {
+            limit: 0,
+            base: core::ptr::null(),
+        }
+    }
+}
+
+impl<T> DescriptorTablePointer<T> {
+    pub fn new(tbl: &T) -> Self {
+        // GDT, LDT, and IDT all expect the limit to be set to "one less".
+        // See Intel 3a, Section 3.5.1 "Segment Descriptor Tables" and
+        // Section 6.10 "Interrupt Descriptor Table (IDT)".
+        let len = size_of::<T>() - 1;
+        assert!(len < 0x10000);
+        DescriptorTablePointer {
+            base: tbl as *const T,
+            limit: len as u16,
+        }
+    }
+
+    pub fn new_from_slice(slice: &[T]) -> Self {
+        // GDT, LDT, and IDT all expect the limit to be set to "one less".
+        // See Intel 3a, Section 3.5.1 "Segment Descriptor Tables" and
+        // Section 6.10 "Interrupt Descriptor Table (IDT)".
+        let len = slice.len() * size_of::<T>() - 1;
+        assert!(len < 0x10000);
+        DescriptorTablePointer {
+            base: slice.as_ptr(),
+            limit: len as u16,
+        }
+    }
+}
+
+impl<T> fmt::Debug for DescriptorTablePointer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "DescriptorTablePointer ({} {:?})", { self.limit }, { self.base } )
+    }
+}
+
+/// Load the GDTR register with the specified base and limit.
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn lgdt<T>(gdt: &DescriptorTablePointer<T>) {
+    //llvm_asm!("lgdt ($0)" :: "r" (gdt) : "memory");
+    asm!("lgdt [{}]", in(reg) gdt, options(nostack));
+}
+
+/// Retrieve base and limit from the GDTR register.
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn sgdt<T>(idt: &mut DescriptorTablePointer<T>) {
+    //llvm_asm!("sgdt ($0)" : "+r" (idt as *mut DescriptorTablePointer<T>) :: "memory");
+    //asm!("sgdt [{}]", inout(reg) idt, options(nostack));
+
+    let idt_ptr = idt as *mut _ as usize;
+    asm!("sgdt [{}]", in(reg) idt_ptr, options(nostack, preserves_flags));
+}
+
+/// Loads the segment selector into the selector field of the local
+/// descriptor table register (LDTR).
+///
+/// After the segment selector is loaded in the LDTR,
+/// the processor uses the segment selector to locate
+/// the segment descriptor for the LDT in the global
+/// descriptor table (GDT).
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn load_ldtr(selector: SegmentSelector) {
+    //llvm_asm!("lldt $0" :: "r" (selector.bits()) : "memory");
+    let selector_value: u16 = selector.bits();
+    asm!("lldt [{}]", in(reg) &selector_value, options(nostack));
+}
+
+/// Returns the segment selector from the local descriptor table register (LDTR).
+///
+/// The returned segment selector points to the segment descriptor
+/// (located in the GDT) for the current LDT.
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn ldtr() -> SegmentSelector {
+    let selector: u16;
+    //llvm_asm!("sldt $0" : "=r"(selector));
+    asm!("sldt {}", out(reg) selector, options(nostack));
+    SegmentSelector::from_raw(selector)
+}
+
+/// Load the IDTR register with the specified base and limit.
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn lidt<T>(idt: &DescriptorTablePointer<T>) {
+    //llvm_asm!("lidt ($0)" :: "r" (idt) : "memory");
+    asm!("lidt [{}]", in(reg) idt, options(nostack));
+}
+
+/// Retrieve base and limit from the IDTR register.
+///
+/// # Safety
+/// Needs CPL 0.
+pub unsafe fn sidt<T>(idt: &mut DescriptorTablePointer<T>) {
+    //llvm_asm!("sidt ($0)" : "+r" (idt as *mut DescriptorTablePointer<T>) :: "memory");
+    //asm!("sidt [{}]", inout(reg) idt, options(nostack));
+
+    let idt_ptr = idt as *mut _ as usize;
+    asm!("sidt [{}]", in(reg) idt_ptr, options(nostack, preserves_flags));
+}
+
+
+#[cfg(all(test, feature = "utest"))]
+mod test {
+    use super::*;
+
+    #[test]
+    fn check_sgdt() {
+        let gdtr: super::DescriptorTablePointer<u64> = Default::default();
+        gdtr.limit = 0xdead;
+        gdtr.base = 0xbadc0de as *mut u64;
+        unsafe {
+            sgdt(&mut gdtr);
+        }
+        assert_ne!(gdtr.limit, 0);
+        assert_ne!(gdtr.base, core::ptr::null_mut());
+        assert_ne!(gdtr.limit, 0xdead);
+        assert_ne!(gdtr.base, 0xbadc0de);
+    }
+    
+    #[test]
+    fn check_sidt() {
+        let gdtr: super::DescriptorTablePointer<u64> = Default::default();
+        idtr.limit = 0xdead;
+        idtr.base = 0xbadc0de as *mut u64;
+        unsafe {
+            sidt(&mut idtr);
+        }
+        assert_ne!(idtr.limit, 0);
+        assert_ne!(idtr.base, core::ptr::null_mut());
+        assert_ne!(idtr.limit, 0xdead);
+        assert_ne!(idtr.base, 0xbadc0de);
+    }
+}
